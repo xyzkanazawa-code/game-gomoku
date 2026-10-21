@@ -1,6 +1,5 @@
 /**
  * Web Audio APIを用いた効果音生成ユーティリティ
- * 外部音声ファイルが不要で、高速かつ完全無料で動作します。
  */
 class SoundManager {
   private ctx: AudioContext | null = null;
@@ -29,7 +28,7 @@ class SoundManager {
   }
 
   /**
-   * 碁石を打ったときの「パチッ」という心地よい衝突音
+   * 碁石を打ったときの「パチッ」という衝突音
    */
   public playStonePlacement() {
     if (this.isMuted) return;
@@ -38,8 +37,8 @@ class SoundManager {
 
     const now = ctx.currentTime;
 
-    // 1. ノイズバースト（木と石の鋭いアタック音）
-    const bufferSize = ctx.sampleRate * 0.04; // 40ms
+    // ノイズバースト
+    const bufferSize = ctx.sampleRate * 0.04;
     const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) {
@@ -62,7 +61,7 @@ class SoundManager {
     noiseGain.connect(ctx.destination);
     noise.start(now);
 
-    // 2. 盤面の共鳴音（木盤の温かみのある余韻）
+    // 盤面の共鳴音
     const osc = ctx.createOscillator();
     const oscGain = ctx.createGain();
 
@@ -112,7 +111,7 @@ class SoundManager {
   }
 
   /**
-   * チャット受信や通知の優しい音
+   * 通知音
    */
   public playNotification() {
     if (this.isMuted) return;
@@ -124,8 +123,8 @@ class SoundManager {
     const gain = ctx.createGain();
 
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, now); // A5
-    osc.frequency.exponentialRampToValueAtTime(1318.5, now + 0.1); // E6
+    osc.frequency.setValueAtTime(880, now);
+    osc.frequency.exponentialRampToValueAtTime(1318.5, now + 0.1);
 
     gain.gain.setValueAtTime(0.2, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
@@ -135,6 +134,95 @@ class SoundManager {
 
     osc.start(now);
     osc.stop(now + 0.2);
+  }
+
+  /**
+   * 地雷爆発音（低音轟音）
+   */
+  public playExplosion() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const bufferSize = ctx.sampleRate * 0.5; // 500ms
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.15));
+    }
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(400, now);
+    filter.frequency.exponentialRampToValueAtTime(50, now + 0.45);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(1.0, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.48);
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    noise.start(now);
+  }
+
+  /**
+   * スキル発動音（キラキラとした魔法音）
+   */
+  public playSkill() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    [659.25, 830.61, 987.77, 1318.51].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const time = now + idx * 0.08;
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, time);
+
+      gain.gain.setValueAtTime(0, time);
+      gain.gain.linearRampToValueAtTime(0.25, time + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.3);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(time);
+      osc.stop(time + 0.3);
+    });
+  }
+
+  /**
+   * 秒読みカウントダウン音（チクタク音）
+   */
+  public playTick(isUrgent: boolean = false) {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(isUrgent ? 880 : 440, now);
+
+    gain.gain.setValueAtTime(0.15, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.06);
   }
 }
 

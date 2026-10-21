@@ -6,7 +6,6 @@ export const createEmptyBoard = (): BoardState => {
   return Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null));
 };
 
-// 方向ベクトル: [行方向, 列方向]
 const DIRECTIONS: [number, number][] = [
   [0, 1],   // 横 (右)
   [1, 0],   // 縦 (下)
@@ -15,16 +14,22 @@ const DIRECTIONS: [number, number][] = [
 ];
 
 /**
- * 着手後に勝利（5連以上）があるかどうか判定する
+ * 着手位置を起点に勝利判定を行う
+ * @param targetCount 勝利に必要な連続数（通常5、六目並べは6）
  */
-export const checkWin = (board: BoardState, lastRow: number, lastCol: number): WinResult | null => {
+export const checkWin = (
+  board: BoardState,
+  lastRow: number,
+  lastCol: number,
+  targetCount: number = 5
+): WinResult | null => {
   const player = board[lastRow][lastCol];
   if (!player) return null;
 
   for (const [dr, dc] of DIRECTIONS) {
     const line: Position[] = [{ row: lastRow, col: lastCol }];
 
-    // 正方向を調べる
+    // 正方向
     let r = lastRow + dr;
     let c = lastCol + dc;
     while (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE && board[r][c] === player) {
@@ -33,7 +38,7 @@ export const checkWin = (board: BoardState, lastRow: number, lastCol: number): W
       c += dc;
     }
 
-    // 逆方向を調べる
+    // 逆方向
     r = lastRow - dr;
     c = lastCol - dc;
     while (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE && board[r][c] === player) {
@@ -42,8 +47,7 @@ export const checkWin = (board: BoardState, lastRow: number, lastCol: number): W
       c -= dc;
     }
 
-    // 5個以上並んでいる場合は勝利
-    if (line.length >= 5) {
+    if (line.length >= targetCount) {
       return {
         winner: player,
         winningLine: line,
@@ -51,6 +55,21 @@ export const checkWin = (board: BoardState, lastRow: number, lastCol: number): W
     }
   }
 
+  return null;
+};
+
+/**
+ * 盤面全体を検査して勝利ラインがあるか判定する（スキル等で石が変化した際用）
+ */
+export const checkGlobalWin = (board: BoardState, targetCount: number = 5): WinResult | null => {
+  for (let r = 0; r < BOARD_SIZE; r++) {
+    for (let c = 0; c < BOARD_SIZE; c++) {
+      if (board[r][c] !== null) {
+        const res = checkWin(board, r, c, targetCount);
+        if (res) return res;
+      }
+    }
+  }
   return null;
 };
 

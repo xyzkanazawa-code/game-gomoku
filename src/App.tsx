@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type {
   Player,
   BoardState,
@@ -8,8 +8,11 @@ import type {
   MoveRecord,
   ChatMessage,
   PeerMessage,
+  SpecialRule,
+  SkillType,
+  PlayerSkills,
 } from './types/game';
-import { createEmptyBoard, checkWin, isBoardFull } from './logic/gomoku';
+import { createEmptyBoard, checkWin, checkGlobalWin, isBoardFull, BOARD_SIZE } from './logic/gomoku';
 import { getAIMove } from './logic/ai';
 import { soundManager } from './utils/sound';
 import { usePeerConnection } from './hooks/usePeerConnection';
@@ -20,6 +23,29 @@ import { OnlineModal } from './components/OnlineModal';
 import { WinModal } from './components/WinModal';
 import { ChatDrawer } from './components/ChatDrawer';
 import { RulesModal } from './components/RulesModal';
+import { SpecialRuleSelector } from './components/SpecialRuleSelector';
+import { SkillBar } from './components/SkillBar';
+
+// 地雷のランダム生成（5個、中央付近を避ける）
+const generateMines = (): Position[] => {
+  const mines: Position[] = [];
+  while (mines.length < 5) {
+    const r = Math.floor(Math.random() * BOARD_SIZE);
+    const c = Math.floor(Math.random() * BOARD_SIZE);
+    // 天元(7,7)は除外
+    if (r === 7 && c === 7) continue;
+    if (!mines.some((m) => m.row === r && m.col === c)) {
+      mines.push({ row: r, col: c });
+    }
+  }
+  return mines;
+};
+
+const initialSkills: PlayerSkills = {
+  flip: true,
+  destroy: true,
+  double: true,
+};
 
 export function App() {
   const [board, setBoard] = useState<BoardState>(createEmptyBoard());
@@ -28,10 +54,34 @@ export function App() {
   const [winner, setWinner] = useState<Player | 'draw' | null>(null);
   const [winningLine, setWinningLine] = useState<Position[] | null>(null);
 
+  // 特殊ルール & タイマー
+  const [specialRule, setSpecialRule] = useState<SpecialRule>('standard');
+  const [timeLimit, setTimeLimit] = useState<number | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+
+  // 六目並べ用: 現在のターンで打った手数 (0: 1手目待ち, 1: 2手目待ち)
+  const [connect6MovesInTurn, setConnect6MovesInTurn] = useState<number>(0);
+
+  // 消える五目並べ用: 石の配置履歴（古い順）
+  const [blackStones, setBlackStones] = useState<Position[]>([]);
+  const [whiteStones, setWhiteStones] = useState<Position[]>([]);
+
+  // 地雷五目並べ用
+  const [mines, setMines] = useState<Position[]>(generateMines());
+  const [revealedMines, setRevealedMines] = useState<Position[]>([]);
+
+  // スキル五目並べ用
+  const [blackSkills, setBlackSkills] = useState<PlayerSkills>({ ...initialSkills });
+  const [whiteSkills, setWhiteSkills] = useState<PlayerSkills>({ ...initialSkills });
+  const [activeSkillMode, setActiveSkillMode] = useState<SkillType | null>(null);
+  const [isDoubleMoveActive, setIsDoubleMoveActive] = useState<boolean>(false);
+
+  // ゲームモード・AI
   const [gameMode, setGameMode] = useState<GameMode>('ai');
   const [aiDifficulty, setAiDifficulty] = useState<AIDifficulty>('medium');
   const [isAiThinking, setIsAiThinking] = useState(false);
 
+  // UI状態
   const [isMuted, setIsMuted] = useState(false);
   const [isOnlineModalOpen, setIsOnlineModalOpen] = useState(false);
   const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
@@ -39,15 +89,10 @@ export function App() {
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
-  // オンラインP2P用のコールバック参照
-  const boardRef = useRef(board);
-  boardRef.current = board;
-  const currentTurnRef = useRef(currentTurn);
-  currentTurnRef.current = currentTurn;
-  const winnerRef = useRef(winner);
-  winnerRef.current = winner;
+  // 勝利に必要な石の数
+  const winTarget = specialRule === 'connect6' ? 6 : 5;
 
-  // リセット共通処理
+  // リセット
   const handleResetGame = useCallback(() => {
     setBoard(createEmptyBoard());
     setCurrentTurn('black');
@@ -55,100 +100,129 @@ export function App() {
     setWinner(null);
     setWinningLine(null);
     setIsAiThinking(false);
-  }, []);
+    setConnect6MovesInTurn(0);
+    setBlackStones([]);
+    setWhiteStones([]);
+    setMines(generateMines());
+    setRevealedMines([]);
+    setBlackSkills({ ...initialSkills });
+    setWhiteSkills({ ...initialSkills });
+    setActiveSkillMode(null);
+    setIsDoubleMoveActive(false);
+    setTimeLeft(timeLimit);
+  }, [timeLimit]);
 
-  // オンラインメッセージハンドラ
-  const handlePeerMessage = useCallback((msg: PeerMessage) => {
-    switch (msg.type) {
-      case 'move': {
-        const { row, col, player } = msg.payload as MoveRecord;
-        soundManager.playStonePlacement();
+  // オンラインメッセージ受信
+  const handlePeerMessage = useCallback(
+    (msg: PeerMessage) => {
+      switch (msg.type) {
+        case 'move': {
+          const { row, col, player } = msg.payload as MoveRecord;
+          soundManager.playStonePlacement();
 
-        setBoard((prev) => {
-          const next = prev.map((r) => [...r]);
-          next[row][col] = player;
-          return next;
-        });
-
-        setMoveHistory((prev) => [...prev, { row, col, player }]);
-
-        // 勝利判定
-        setTimeout(() => {
-          setBoard((cur) => {
-            const winRes = checkWin(cur, row, col);
-            if (winRes) {
-              setWinner(winRes.winner);
-              setWinningLine(winRes.winningLine);
-              soundManager.playWin();
-            } else if (isBoardFull(cur)) {
-              setWinner('draw');
-            } else {
-              setCurrentTurn(player === 'black' ? 'white' : 'black');
-            }
-            return cur;
+          setBoard((prev) => {
+            const next = prev.map((r) => [...r]);
+            next[row][col] = player;
+            return next;
           });
-        }, 10);
-        break;
-      }
 
-      case 'surrender': {
-        const surrenderedPlayer = msg.payload as Player;
-        const vict = surrenderedPlayer === 'black' ? 'white' : 'black';
-        setWinner(vict);
-        soundManager.playWin();
-        break;
-      }
+          setMoveHistory((prev) => [...prev, { row, col, player }]);
 
-      case 'reset_request': {
-        if (window.confirm('対戦相手から「最初からやり直す」リクエストがありました。応じますか？')) {
+          setTimeout(() => {
+            setBoard((cur) => {
+              const winRes = checkWin(cur, row, col, winTarget);
+              if (winRes) {
+                setWinner(winRes.winner);
+                setWinningLine(winRes.winningLine);
+                soundManager.playWin();
+              } else if (isBoardFull(cur)) {
+                setWinner('draw');
+              } else {
+                setCurrentTurn(player === 'black' ? 'white' : 'black');
+                setTimeLeft(timeLimit);
+              }
+              return cur;
+            });
+          }, 10);
+          break;
+        }
+
+        case 'sync_settings': {
+          const { rule, limit } = msg.payload;
+          setSpecialRule(rule);
+          setTimeLimit(limit);
+          setTimeLeft(limit);
           handleResetGame();
-          peerConn.sendMessage({ type: 'reset_accept' });
+          break;
         }
-        break;
-      }
 
-      case 'reset_accept': {
-        handleResetGame();
-        break;
-      }
-
-      case 'undo_request': {
-        if (window.confirm('対戦相手から「待った」の要請がありました。許可しますか？')) {
-          handleUndoInternal(2); // 相手の手＋自分の手を戻す
-          peerConn.sendMessage({ type: 'undo_accept' });
+        case 'surrender': {
+          const surrenderedPlayer = msg.payload as Player;
+          const vict = surrenderedPlayer === 'black' ? 'white' : 'black';
+          setWinner(vict);
+          soundManager.playWin();
+          break;
         }
-        break;
-      }
 
-      case 'undo_accept': {
-        handleUndoInternal(2);
-        break;
-      }
+        case 'timeout': {
+          const timedOutPlayer = msg.payload as Player;
+          setWinner(timedOutPlayer === 'black' ? 'white' : 'black');
+          soundManager.playWin();
+          break;
+        }
 
-      case 'chat': {
-        const chatText = msg.payload as string;
-        soundManager.playNotification();
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString(),
-            sender: 'opponent',
-            text: chatText,
-            timestamp: Date.now(),
-          },
-        ]);
-        setHasUnreadChat(true);
-        break;
-      }
+        case 'reset_request': {
+          if (window.confirm('対戦相手から「最初からやり直す」リクエストがありました。応じますか？')) {
+            handleResetGame();
+            peerConn.sendMessage({ type: 'reset_accept' });
+          }
+          break;
+        }
 
-      default:
-        break;
-    }
-  }, [handleResetGame]);
+        case 'reset_accept': {
+          handleResetGame();
+          break;
+        }
+
+        case 'undo_request': {
+          if (window.confirm('対戦相手から「待った」の要請がありました。許可しますか？')) {
+            handleResetGame();
+            peerConn.sendMessage({ type: 'undo_accept' });
+          }
+          break;
+        }
+
+        case 'undo_accept': {
+          handleResetGame();
+          break;
+        }
+
+        case 'chat': {
+          const chatText = msg.payload as string;
+          soundManager.playNotification();
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              sender: 'opponent',
+              text: chatText,
+              timestamp: Date.now(),
+            },
+          ]);
+          setHasUnreadChat(true);
+          break;
+        }
+
+        default:
+          break;
+      }
+    },
+    [winTarget, timeLimit, handleResetGame]
+  );
 
   const peerConn = usePeerConnection({
     onMessage: handlePeerMessage,
-    onConnected: () => {
+    onConnected: (isHost) => {
       handleResetGame();
       setIsOnlineModalOpen(false);
       setChatMessages([
@@ -159,6 +233,13 @@ export function App() {
           timestamp: Date.now(),
         },
       ]);
+      // ホスト側のルール設定をゲストに同期
+      if (isHost) {
+        peerConn.sendMessage({
+          type: 'sync_settings',
+          payload: { rule: specialRule, limit: timeLimit },
+        });
+      }
     },
     onDisconnected: () => {
       setChatMessages((prev) => [
@@ -184,6 +265,47 @@ export function App() {
     }
   }, []);
 
+  // タイマー秒読みカウントダウン処理
+  useEffect(() => {
+    if (timeLimit === null || winner) {
+      setTimeLeft(null);
+      return;
+    }
+
+    // 初回初期化
+    if (timeLeft === null) {
+      setTimeLeft(timeLimit);
+    }
+
+    const timer = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev === null) return timeLimit;
+        if (prev <= 1) {
+          // 時間切れ！手番プレイヤーの敗北
+          clearInterval(timer);
+          const loser = currentTurn;
+          const vict: Player = loser === 'black' ? 'white' : 'black';
+          setWinner(vict);
+          soundManager.playWin();
+
+          if (gameMode === 'online') {
+            peerConn.sendMessage({ type: 'timeout', payload: loser });
+          }
+          return 0;
+        }
+
+        // 残り3秒で警告チクタク音
+        if (prev <= 4) {
+          soundManager.playTick(true);
+        }
+
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [timeLimit, currentTurn, winner, gameMode, peerConn]);
+
   // 音声ON/OFF
   const handleToggleSound = () => {
     const nextMuted = !isMuted;
@@ -191,63 +313,108 @@ export function App() {
     soundManager.setMuted(nextMuted);
   };
 
-  // 内部的な手戻し処理
-  const handleUndoInternal = (steps: number) => {
-    setMoveHistory((prev) => {
-      if (prev.length < steps) return prev;
-      const nextHist = prev.slice(0, prev.length - steps);
-      const newBoard = createEmptyBoard();
-      nextHist.forEach((m) => {
-        newBoard[m.row][m.col] = m.player;
+  // ルール変更
+  const handleSelectRule = (rule: SpecialRule) => {
+    setSpecialRule(rule);
+    handleResetGame();
+    if (gameMode === 'online' && peerConn.isConnected) {
+      peerConn.sendMessage({
+        type: 'sync_settings',
+        payload: { rule, limit: timeLimit },
       });
-      setBoard(newBoard);
-      const lastMove = nextHist[nextHist.length - 1];
-      setCurrentTurn(lastMove ? (lastMove.player === 'black' ? 'white' : 'black') : 'black');
-      setWinner(null);
-      setWinningLine(null);
-      return nextHist;
-    });
+    }
   };
 
-  // 待ったボタン押下
-  const handleUndo = () => {
-    if (moveHistory.length === 0 || winner) return;
+  // タイマー変更
+  const handleSetTimeLimit = (seconds: number | null) => {
+    setTimeLimit(seconds);
+    setTimeLeft(seconds);
+    if (gameMode === 'online' && peerConn.isConnected) {
+      peerConn.sendMessage({
+        type: 'sync_settings',
+        payload: { rule: specialRule, limit: seconds },
+      });
+    }
+  };
 
-    if (gameMode === 'local') {
-      handleUndoInternal(1);
-    } else if (gameMode === 'ai') {
-      // 自分の番でCPUの手も戻すなら2手、相手の思考中なら1手
-      const steps = moveHistory.length >= 2 ? 2 : 1;
-      handleUndoInternal(steps);
-      setIsAiThinking(false);
-    } else if (gameMode === 'online') {
-      if (peerConn.isConnected) {
-        alert('対戦相手に「待った」の要請を送信しました。相手の承諾をお待ちください。');
-        peerConn.sendMessage({ type: 'undo_request' });
+  // スキル発動モード開始
+  const handleActivateSkill = (skill: SkillType) => {
+    if (skill === 'double') {
+      // 連打スキル
+      soundManager.playSkill();
+      setIsDoubleMoveActive(true);
+      if (currentTurn === 'black') {
+        setBlackSkills((prev) => ({ ...prev, double: false }));
+      } else {
+        setWhiteSkills((prev) => ({ ...prev, double: false }));
+      }
+      setActiveSkillMode(null);
+    } else {
+      setActiveSkillMode(skill);
+    }
+  };
+
+  // 相手の石をクリックしてスキル実行（反転または破壊）
+  const handleStoneSkillClick = (row: number, col: number) => {
+    if (!activeSkillMode) return;
+    const targetPlayer = board[row][col];
+    if (!targetPlayer || targetPlayer === currentTurn) return;
+
+    soundManager.playSkill();
+
+    const newBoard = board.map((r) => [...r]);
+
+    if (activeSkillMode === 'flip') {
+      newBoard[row][col] = currentTurn;
+      if (currentTurn === 'black') {
+        setBlackSkills((prev) => ({ ...prev, flip: false }));
+      } else {
+        setWhiteSkills((prev) => ({ ...prev, flip: false }));
+      }
+    } else if (activeSkillMode === 'destroy') {
+      newBoard[row][col] = null;
+      if (currentTurn === 'black') {
+        setBlackSkills((prev) => ({ ...prev, destroy: false }));
+      } else {
+        setWhiteSkills((prev) => ({ ...prev, destroy: false }));
+      }
+    }
+
+    setBoard(newBoard);
+    setActiveSkillMode(null);
+
+    // 反転や破壊による勝利判定
+    const globalWin = checkGlobalWin(newBoard, winTarget);
+    if (globalWin) {
+      setWinner(globalWin.winner);
+      setWinningLine(globalWin.winningLine);
+      soundManager.playWin();
+      return;
+    }
+
+    // 手番交代
+    const nextTurn = currentTurn === 'black' ? 'white' : 'black';
+    setCurrentTurn(nextTurn);
+    setTimeLeft(timeLimit);
+  };
+
+  // 地雷爆発処理 (周囲3×3を消滅)
+  const triggerMineExplosion = (row: number, col: number, newBoard: BoardState) => {
+    soundManager.playExplosion();
+    setRevealedMines((prev) => [...prev, { row, col }]);
+
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = row + dr;
+        const nc = col + dc;
+        if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+          newBoard[nr][nc] = null;
+        }
       }
     }
   };
 
-  // 投了ボタン押下
-  const handleSurrender = () => {
-    if (winner) return;
-
-    if (gameMode === 'online') {
-      if (!confirm('本当に投了しますか？')) return;
-      const myColor: Player = peerConn.isHost ? 'black' : 'white';
-      peerConn.sendMessage({ type: 'surrender', payload: myColor });
-      setWinner(myColor === 'black' ? 'white' : 'black');
-    } else if (gameMode === 'ai') {
-      if (!confirm('投了してCPUの勝利としますか？')) return;
-      setWinner('white');
-    } else {
-      if (!confirm(`${currentTurn === 'black' ? '先手(黒)' : '後手(白)'}が投了しますか？`)) return;
-      setWinner(currentTurn === 'black' ? 'white' : 'black');
-    }
-    soundManager.playWin();
-  };
-
-  // 石を置く処理
+  // 石を打つ処理
   const handlePlaceStone = (row: number, col: number) => {
     if (board[row][col] || winner || isAiThinking) return;
 
@@ -264,14 +431,46 @@ export function App() {
     const player = currentTurn;
     const newBoard = board.map((r) => [...r]);
     newBoard[row][col] = player;
-    setBoard(newBoard);
 
+    // 1. 地雷五目並べの判定
+    const hitMine = specialRule === 'minefield' && mines.some((m) => m.row === row && m.col === col);
+    if (hitMine) {
+      triggerMineExplosion(row, col, newBoard);
+      setBoard(newBoard);
+      setMoveHistory((prev) => [...prev, { row, col, player }]);
+
+      // 地雷を踏んだ場合は手番が相手に移る
+      const nextTurn = player === 'black' ? 'white' : 'black';
+      setCurrentTurn(nextTurn);
+      setTimeLeft(timeLimit);
+      return;
+    }
+
+    // 2. 消える五目並べの判定（最大6個）
+    if (specialRule === 'disappearing') {
+      if (player === 'black') {
+        const updated = [...blackStones, { row, col }];
+        if (updated.length > 6) {
+          const oldest = updated.shift()!;
+          newBoard[oldest.row][oldest.col] = null;
+        }
+        setBlackStones(updated);
+      } else {
+        const updated = [...whiteStones, { row, col }];
+        if (updated.length > 6) {
+          const oldest = updated.shift()!;
+          newBoard[oldest.row][oldest.col] = null;
+        }
+        setWhiteStones(updated);
+      }
+    }
+
+    setBoard(newBoard);
     const newHistory = [...moveHistory, { row, col, player }];
     setMoveHistory(newHistory);
-
     soundManager.playStonePlacement();
 
-    // オンライン時は相手に着手を送信
+    // オンライン送信
     if (gameMode === 'online') {
       peerConn.sendMessage({
         type: 'move',
@@ -280,7 +479,7 @@ export function App() {
     }
 
     // 勝利判定
-    const winResult = checkWin(newBoard, row, col);
+    const winResult = checkWin(newBoard, row, col, winTarget);
     if (winResult) {
       setWinner(winResult.winner);
       setWinningLine(winResult.winningLine);
@@ -294,19 +493,86 @@ export function App() {
       return;
     }
 
+    // 3. 連打スキル中判定
+    if (isDoubleMoveActive) {
+      setIsDoubleMoveActive(false);
+      // 同じプレイヤーがもう1手打てる（手番交代しない）
+      setTimeLeft(timeLimit);
+      return;
+    }
+
+    // 4. 六目並べ（Connect 6）判定
+    // 初手（1手目、黒）は1手のみで手番交代。以降は2手ごとに交代
+    if (specialRule === 'connect6') {
+      if (moveHistory.length === 0) {
+        // 初手黒1手終了 → 白の手番へ（2手待ち）
+        setCurrentTurn('white');
+        setConnect6MovesInTurn(0);
+        setTimeLeft(timeLimit);
+        triggerAIMoveIfNeeded(newBoard, 'white');
+        return;
+      } else if (connect6MovesInTurn === 0) {
+        // 1手目完了 → 同プレイヤーの2手目待ちへ
+        setConnect6MovesInTurn(1);
+        setTimeLeft(timeLimit);
+        if (gameMode === 'ai' && player === 'white') {
+          triggerAIMoveIfNeeded(newBoard, 'white');
+        }
+        return;
+      } else {
+        // 2手目完了 → 相手の手番へ交代
+        setConnect6MovesInTurn(0);
+        const nextTurn = player === 'black' ? 'white' : 'black';
+        setCurrentTurn(nextTurn);
+        setTimeLeft(timeLimit);
+        triggerAIMoveIfNeeded(newBoard, nextTurn);
+        return;
+      }
+    }
+
+    // 通常の手番交代
     const nextTurn = player === 'black' ? 'white' : 'black';
     setCurrentTurn(nextTurn);
+    setTimeLeft(timeLimit);
 
-    // CPUの着手処理
+    // CPUの着手
+    triggerAIMoveIfNeeded(newBoard, nextTurn);
+  };
+
+  // CPU着手呼び出し
+  const triggerAIMoveIfNeeded = (currentBoard: BoardState, nextTurn: Player) => {
     if (gameMode === 'ai' && nextTurn === 'white') {
       setIsAiThinking(true);
       setTimeout(() => {
-        const aiMove = getAIMove(newBoard, 'white', aiDifficulty);
+        const aiMove = getAIMove(currentBoard, 'white', aiDifficulty);
         if (aiMove) {
-          const updatedBoard = newBoard.map((r) => [...r]);
+          const updatedBoard = currentBoard.map((r) => [...r]);
           updatedBoard[aiMove.row][aiMove.col] = 'white';
-          setBoard(updatedBoard);
 
+          // 地雷判定
+          if (specialRule === 'minefield' && mines.some((m) => m.row === aiMove.row && m.col === aiMove.col)) {
+            triggerMineExplosion(aiMove.row, aiMove.col, updatedBoard);
+            setBoard(updatedBoard);
+            setMoveHistory((prev) => [...prev, { row: aiMove.row, col: aiMove.col, player: 'white' }]);
+            setCurrentTurn('black');
+            setTimeLeft(timeLimit);
+            setIsAiThinking(false);
+            return;
+          }
+
+          // 消える五目並べ判定
+          if (specialRule === 'disappearing') {
+            setWhiteStones((prev) => {
+              const updated = [...prev, { row: aiMove.row, col: aiMove.col }];
+              if (updated.length > 6) {
+                const oldest = updated.shift()!;
+                updatedBoard[oldest.row][oldest.col] = null;
+              }
+              return updated;
+            });
+          }
+
+          setBoard(updatedBoard);
           setMoveHistory((prev) => [
             ...prev,
             { row: aiMove.row, col: aiMove.col, player: 'white' },
@@ -314,7 +580,7 @@ export function App() {
 
           soundManager.playStonePlacement();
 
-          const aiWin = checkWin(updatedBoard, aiMove.row, aiMove.col);
+          const aiWin = checkWin(updatedBoard, aiMove.row, aiMove.col, winTarget);
           if (aiWin) {
             setWinner(aiWin.winner);
             setWinningLine(aiWin.winningLine);
@@ -322,7 +588,16 @@ export function App() {
           } else if (isBoardFull(updatedBoard)) {
             setWinner('draw');
           } else {
-            setCurrentTurn('black');
+            // 六目並べのCPU2手目処理
+            if (specialRule === 'connect6' && connect6MovesInTurn === 0 && moveHistory.length > 0) {
+              setConnect6MovesInTurn(1);
+              triggerAIMoveIfNeeded(updatedBoard, 'white');
+              return;
+            } else {
+              setConnect6MovesInTurn(0);
+              setCurrentTurn('black');
+              setTimeLeft(timeLimit);
+            }
           }
         }
         setIsAiThinking(false);
@@ -342,7 +617,68 @@ export function App() {
     peerConn.sendMessage({ type: 'chat', payload: text });
   };
 
-  // 自分の手番かどうかの判定
+  // 待ったボタン
+  const handleUndo = () => {
+    if (moveHistory.length === 0 || winner) return;
+    if (gameMode === 'local') {
+      const steps = 1;
+      setMoveHistory((prev) => {
+        if (prev.length < steps) return prev;
+        const nextHist = prev.slice(0, prev.length - steps);
+        const newBoard = createEmptyBoard();
+        nextHist.forEach((m) => {
+          newBoard[m.row][m.col] = m.player;
+        });
+        setBoard(newBoard);
+        const lastMove = nextHist[nextHist.length - 1];
+        setCurrentTurn(lastMove ? (lastMove.player === 'black' ? 'white' : 'black') : 'black');
+        setWinner(null);
+        setWinningLine(null);
+        return nextHist;
+      });
+    } else if (gameMode === 'ai') {
+      const steps = moveHistory.length >= 2 ? 2 : 1;
+      setMoveHistory((prev) => {
+        if (prev.length < steps) return prev;
+        const nextHist = prev.slice(0, prev.length - steps);
+        const newBoard = createEmptyBoard();
+        nextHist.forEach((m) => {
+          newBoard[m.row][m.col] = m.player;
+        });
+        setBoard(newBoard);
+        const lastMove = nextHist[nextHist.length - 1];
+        setCurrentTurn(lastMove ? (lastMove.player === 'black' ? 'white' : 'black') : 'black');
+        setWinner(null);
+        setWinningLine(null);
+        return nextHist;
+      });
+      setIsAiThinking(false);
+    } else if (gameMode === 'online') {
+      if (peerConn.isConnected) {
+        alert('対戦相手に「待った」の要請を送信しました。');
+        peerConn.sendMessage({ type: 'undo_request' });
+      }
+    }
+  };
+
+  // 投了
+  const handleSurrender = () => {
+    if (winner) return;
+    if (gameMode === 'online') {
+      if (!confirm('本当に投了しますか？')) return;
+      const myColor: Player = peerConn.isHost ? 'black' : 'white';
+      peerConn.sendMessage({ type: 'surrender', payload: myColor });
+      setWinner(myColor === 'black' ? 'white' : 'black');
+    } else if (gameMode === 'ai') {
+      if (!confirm('投了してCPUの勝利としますか？')) return;
+      setWinner('white');
+    } else {
+      if (!confirm(`${currentTurn === 'black' ? '先手(黒)' : '後手(白)'}が投了しますか？`)) return;
+      setWinner(currentTurn === 'black' ? 'white' : 'black');
+    }
+    soundManager.playWin();
+  };
+
   const isMyTurn =
     gameMode === 'local'
       ? true
@@ -354,7 +690,7 @@ export function App() {
   const lastMove = moveHistory.length > 0 ? moveHistory[moveHistory.length - 1] : null;
 
   return (
-    <div className="min-h-screen bg-[#141414] text-zinc-100 flex flex-col justify-between py-2 sm:py-6 px-2 sm:px-4">
+    <div className="min-h-screen bg-[#141414] text-zinc-100 flex flex-col justify-between py-2 sm:py-4 px-2 sm:px-4">
       {/* 上部ヘッダー */}
       <GameHeader
         gameMode={gameMode}
@@ -364,6 +700,7 @@ export function App() {
         }}
         aiDifficulty={aiDifficulty}
         onSelectAIDifficulty={setAiDifficulty}
+        specialRule={specialRule}
         currentTurn={currentTurn}
         myColor={gameMode === 'online' ? (peerConn.isHost ? 'black' : 'white') : null}
         moveCount={moveHistory.length}
@@ -372,10 +709,33 @@ export function App() {
         onOpenRules={() => setIsRulesModalOpen(true)}
         onOpenOnlineModal={() => setIsOnlineModalOpen(true)}
         isOnlineConnected={peerConn.isConnected}
+        timeLeft={timeLeft}
+        maxTimeLimit={timeLimit}
+        connect6Step={connect6MovesInTurn + 1}
       />
 
+      {/* 特殊ルール選択バー */}
+      <SpecialRuleSelector
+        specialRule={specialRule}
+        onSelectRule={handleSelectRule}
+        timeLimit={timeLimit}
+        onSetTimeLimit={handleSetTimeLimit}
+        disabled={moveHistory.length > 0}
+      />
+
+      {/* スキル発動バー（スキル五目並べ時のみ表示） */}
+      {specialRule === 'skill' && (
+        <SkillBar
+          skills={currentTurn === 'black' ? blackSkills : whiteSkills}
+          activeSkillMode={activeSkillMode}
+          onActivateSkill={handleActivateSkill}
+          onCancelSkill={() => setActiveSkillMode(null)}
+          disabled={!isMyTurn || Boolean(winner)}
+        />
+      )}
+
       {/* メイン盤面 */}
-      <main className="my-auto py-2 sm:py-4 w-full flex flex-col items-center justify-center">
+      <main className="my-auto py-2 sm:py-3 w-full flex flex-col items-center justify-center">
         <Board
           board={board}
           lastMove={lastMove}
@@ -383,14 +743,20 @@ export function App() {
           currentTurn={currentTurn}
           isMyTurn={isMyTurn}
           disabled={Boolean(winner) || isAiThinking}
+          specialRule={specialRule}
+          blackStoneHistory={blackStones}
+          whiteStoneHistory={whiteStones}
+          revealedMines={revealedMines}
+          activeSkillMode={activeSkillMode}
           onCellClick={handlePlaceStone}
+          onStoneSkillClick={handleStoneSkillClick}
         />
       </main>
 
       {/* 操作コントロール */}
       <Controls
         gameMode={gameMode}
-        canUndo={moveHistory.length > 0 && !winner && !isAiThinking}
+        canUndo={moveHistory.length > 0 && !winner && !isAiThinking && specialRule === 'standard'}
         onUndo={handleUndo}
         onReset={() => {
           if (gameMode === 'online' && peerConn.isConnected) {
@@ -407,12 +773,12 @@ export function App() {
         hasUnreadChat={hasUnreadChat}
       />
 
-      {/* フッター情報 */}
+      {/* フッター */}
       <footer className="text-center text-[11px] text-zinc-500 py-1">
         五目並べ Online &copy; {new Date().getFullYear()} - 完全無料・登録不要
       </footer>
 
-      {/* 各種モーダル & ドロワー */}
+      {/* 各種モーダル */}
       <OnlineModal
         isOpen={isOnlineModalOpen}
         onClose={() => setIsOnlineModalOpen(false)}
