@@ -39,11 +39,14 @@ export const Board: React.FC<BoardProps> = ({
   };
 
   return (
-    <div className="relative p-2 sm:p-5 rounded-2xl wood-board border-4 border-[#8f5d24] max-w-[95vw] sm:max-w-[620px] mx-auto select-none">
-      {/* 盤面グリッド（交点上に石を配置する15×15コンテナ） */}
+    <div className="relative p-2.5 sm:p-5 rounded-2xl wood-board border-4 border-[#8f5d24] w-[min(94vw,560px)] aspect-square mx-auto select-none shadow-2xl flex items-center justify-center">
+      {/* 盤面グリッド（15×15コンテナ） */}
       <div
-        className="grid grid-cols-15 grid-rows-15 aspect-square w-full relative"
-        style={{ gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))` }}
+        className="grid w-full h-full relative"
+        style={{
+          gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)`,
+          gridTemplateRows: `repeat(${BOARD_SIZE}, 1fr)`,
+        }}
       >
         {Array.from({ length: BOARD_SIZE }).map((_, row) =>
           Array.from({ length: BOARD_SIZE }).map((_, col) => {
@@ -55,7 +58,7 @@ export const Board: React.FC<BoardProps> = ({
             return (
               <div
                 key={`${row}-${col}`}
-                className="relative flex items-center justify-center cursor-pointer group"
+                className="relative flex items-center justify-center cursor-pointer group w-full h-full"
                 onClick={() => {
                   if (!cell && !disabled && isMyTurn) {
                     onCellClick(row, col);
@@ -65,7 +68,7 @@ export const Board: React.FC<BoardProps> = ({
                 {/* 盤面の格子線（交点描画） */}
                 {/* 横線 */}
                 <div
-                  className={`absolute h-[1.5px] bg-[#613b16] ${
+                  className={`absolute h-[1.5px] bg-[#613b16] pointer-events-none ${
                     col === 0
                       ? 'left-1/2 right-0'
                       : col === BOARD_SIZE - 1
@@ -75,7 +78,7 @@ export const Board: React.FC<BoardProps> = ({
                 />
                 {/* 縦線 */}
                 <div
-                  className={`absolute w-[1.5px] bg-[#613b16] ${
+                  className={`absolute w-[1.5px] bg-[#613b16] pointer-events-none ${
                     row === 0
                       ? 'top-1/2 bottom-0'
                       : row === BOARD_SIZE - 1
@@ -86,13 +89,13 @@ export const Board: React.FC<BoardProps> = ({
 
                 {/* 星点 */}
                 {isStar && !cell && (
-                  <div className="absolute w-2 h-2 rounded-full bg-[#522f0f] pointer-events-none" />
+                  <div className="absolute w-2 h-2 rounded-full bg-[#522f0f] pointer-events-none z-0" />
                 )}
 
                 {/* ホバー時の半透明プレビュー（手番の石） */}
                 {!cell && !disabled && isMyTurn && (
                   <div
-                    className={`absolute w-[86%] h-[86%] rounded-full opacity-0 group-hover:opacity-45 transition-opacity duration-150 pointer-events-none ${
+                    className={`absolute w-[84%] h-[84%] rounded-full opacity-0 group-hover:opacity-40 transition-opacity duration-150 pointer-events-none z-10 ${
                       currentTurn === 'black' ? 'bg-black' : 'bg-white shadow'
                     }`}
                   />
@@ -101,7 +104,7 @@ export const Board: React.FC<BoardProps> = ({
                 {/* 碁石 */}
                 {cell && (
                   <div
-                    className={`relative w-[88%] h-[88%] rounded-full flex items-center justify-center transition-transform duration-200 ${
+                    className={`relative w-[86%] h-[86%] rounded-full flex items-center justify-center z-10 transition-transform duration-200 ${
                       cell === 'black' ? 'stone-black' : 'stone-white'
                     } ${isWin ? 'scale-110 ring-4 ring-amber-400 animate-pulse' : 'scale-100'}`}
                   >
@@ -109,7 +112,7 @@ export const Board: React.FC<BoardProps> = ({
                     {isLast && !isWin && (
                       <div
                         className={`w-2 h-2 rounded-full ${
-                          cell === 'black' ? 'bg-amber-400' : 'bg-red-500'
+                          cell === 'black' ? 'bg-amber-400' : 'bg-rose-500'
                         }`}
                       />
                     )}

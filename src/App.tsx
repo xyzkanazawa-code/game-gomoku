@@ -375,7 +375,7 @@ export function App() {
       />
 
       {/* メイン盤面 */}
-      <main className="my-auto py-2 flex flex-col items-center">
+      <main className="my-auto py-2 sm:py-4 w-full flex flex-col items-center justify-center">
         <Board
           board={board}
           lastMove={lastMove}
