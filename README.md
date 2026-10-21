@@ -1,32 +1,35 @@
-# React + TypeScript + Vite
+# 五目並べ Online (Gomoku Online)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+ブラウザで誰でも完全無料・登録不要で遊べる五目並べ（Gomoku）Webアプリケーションです。
 
-Currently, two official plugins are available:
+## 主な特徴
+- **WebRTC (PeerJS) オンラインP2P対戦**: 専用サーバー代0円。部屋を作成して発行されたURLを共有するだけで、ブラウザ同士が直接つながり低遅延でリアルタイム対戦できます。
+- **CPU対戦**: 初級・中級・上級の3段階の思考AI（評価関数・攻防スコアリング）を搭載。
+- **ローカル2人対戦**: 1台のPCやスマートフォンで対面対戦が可能。
+- **リアルな打石音と演出**: Web Audio APIにより外部音源不要で生成される心地よい「パチッ」という着手音と、勝利時の紙吹雪演出。
+- **充実のアシスト機能**: 待った、投了、リセット、直前手のハイライト、対戦チャット・スタンプ機能。
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 開発環境とビルド
 
-## React Compiler
+```bash
+# 依存関係のインストール
+npm install
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+# 開発サーバー起動
+npm run dev
 
-## Expanding the Oxlint configuration
+# 本番用ビルド (dist/ へ静的ファイル生成)
+npm run build
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+# ローカルプレビュー
+npm run preview
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## GitHub Pagesへのデプロイ
+1. GitHubで新規リポジトリを作成します。
+2. リモートを追加してプッシュします：
+   ```bash
+   git remote add origin https://github.com/<あなたのユーザー名>/game-gomoku.git
+   git push -u origin main
+   ```
+3. GitHubリポジトリの「Settings」→「Pages」で「GitHub Actions」を選択すると、自動でビルド＆公開されます。
